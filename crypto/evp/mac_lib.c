@@ -104,12 +104,12 @@ static size_t get_size_t_ctx_param(EVP_MAC_CTX *ctx, const char *name)
 
 size_t EVP_MAC_CTX_get_mac_size(EVP_MAC_CTX *ctx)
 {
-    return get_size_t_ctx_param(ctx, OSSL_MAC_PARAM_SIZE);
+    return get_size_t_ctx_param(ctx, OSSL_MAC_PARAM_size);
 }
 
 size_t EVP_MAC_CTX_get_block_size(EVP_MAC_CTX *ctx)
 {
-    return get_size_t_ctx_param(ctx, OSSL_MAC_PARAM_BLOCK_SIZE);
+    return get_size_t_ctx_param(ctx, OSSL_MAC_PARAM_block_size);
 }
 
 int EVP_MAC_init(EVP_MAC_CTX *ctx, const unsigned char *key, size_t keylen,
@@ -203,7 +203,7 @@ static int evp_mac_final(EVP_MAC_CTX *ctx, int xof,
         return 0;
     }
     if (xof) {
-        params[0] = OSSL_PARAM_construct_int(OSSL_MAC_PARAM_XOF, &xof);
+        params[0] = OSSL_PARAM_construct_int(OSSL_MAC_PARAM_xof, &xof);
         params[1] = OSSL_PARAM_construct_end();
 
         if (EVP_MAC_CTX_set_params(ctx, params) <= 0) {
@@ -251,6 +251,17 @@ int EVP_MAC_CTX_get_params(EVP_MAC_CTX *ctx, OSSL_PARAM params[])
 
 int EVP_MAC_CTX_set_params(EVP_MAC_CTX *ctx, const OSSL_PARAM params[])
 {
+    /*
+     * Supplying a key starts the MAC operation, as documented for the "key"
+     * parameter: it is the same as EVP_MAC_init() with a NULL key and these
+     * parameters.  Going through the implementation's init function, rather
+     * than just recording the new state here, matters for the implementations
+     * that only store a key given as a parameter and set up their working
+     * state from it in init (KMAC, BLAKE2).
+     */
+    if (ctx->meth->init != NULL
+        && OSSL_PARAM_locate_const(params, OSSL_MAC_PARAM_KEY) != NULL)
+        return EVP_MAC_init(ctx, NULL, 0, params);
     if (ctx->meth->set_ctx_params != NULL)
         return ctx->meth->set_ctx_params(ctx->algctx, params);
     return 1;
@@ -306,7 +317,7 @@ unsigned char *EVP_Q_mac(OSSL_LIB_CTX *libctx,
         return NULL;
     if (subalg != NULL) {
         const OSSL_PARAM *defined_params = EVP_MAC_settable_ctx_params(mac);
-        const char *param_name = OSSL_MAC_PARAM_DIGEST;
+        const char *param_name = OSSL_MAC_PARAM_digest;
 
         /*
          * The underlying algorithm may be a cipher or a digest.
@@ -314,7 +325,7 @@ unsigned char *EVP_Q_mac(OSSL_LIB_CTX *libctx,
          * should be and bet on that.
          */
         if (OSSL_PARAM_locate_const(defined_params, param_name) == NULL) {
-            param_name = OSSL_MAC_PARAM_CIPHER;
+            param_name = OSSL_MAC_PARAM_cipher;
             if (OSSL_PARAM_locate_const(defined_params, param_name) == NULL) {
                 ERR_raise(ERR_LIB_EVP, ERR_R_PASSED_INVALID_ARGUMENT);
                 goto err;
@@ -335,7 +346,7 @@ unsigned char *EVP_Q_mac(OSSL_LIB_CTX *libctx,
      * by using the propq value here.
      */
     if (propq != NULL)
-        *p++ = OSSL_PARAM_construct_utf8_string(OSSL_ALG_PARAM_PROPERTIES,
+        *p++ = OSSL_PARAM_construct_utf8_string(OSSL_ALG_PARAM_properties,
             (char *)propq, 0);
 
     *p = OSSL_PARAM_construct_end();

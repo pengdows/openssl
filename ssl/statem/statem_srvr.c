@@ -33,6 +33,7 @@
 #include <openssl/comp.h>
 #include "internal/comp.h"
 #include <openssl/ocsp.h>
+#include "internal/usdt.h"
 
 #define TICKET_NONCE_SIZE 8
 
@@ -2066,6 +2067,7 @@ MSG_PROCESS_RETURN tls_process_client_hello(SSL_CONNECTION *s, PACKET *pkt)
             s->ext.ech.backend = 1;
             s->ext.ech.attempted_type = TLSEXT_TYPE_ech;
             OPENSSL_free(s->ext.ech.innerch);
+            s->ext.ech.innerch = NULL;
             s->ext.ech.innerch_len = PACKET_remaining(pkt);
             if (PACKET_peek_bytes(pkt, &pbuf, s->ext.ech.innerch_len) != 1) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
@@ -2377,6 +2379,8 @@ static int tls_early_post_process_client_hello(SSL_CONNECTION *s)
         goto err;
     }
 
+    OSSL_USDT_data(s, { "tls::protocol_version", OSSL_USDT_WORD(s->version) });
+
     /* TLSv1.3 specifies that a ClientHello must end on a record boundary */
     if (SSL_CONNECTION_IS_VERSION13(s)
         && RECORD_LAYER_processed_read_pending(&s->rlayer)) {
@@ -2470,6 +2474,8 @@ static int tls_early_post_process_client_hello(SSL_CONNECTION *s)
             goto err;
         }
         s->s3.tmp.new_cipher = cipher;
+
+        OSSL_USDT_data(s, { "tls::ciphersuite", OSSL_USDT_WORD(SSL_CIPHER_get_protocol_id(s->s3.tmp.new_cipher)) });
     }
 
     /* We need to do this before getting the session */
@@ -2994,6 +3000,8 @@ WORK_STATE tls_post_process_client_hello(SSL_CONNECTION *s, WORK_STATE wst)
                     goto err;
                 }
                 s->s3.tmp.new_cipher = cipher;
+
+                OSSL_USDT_data(s, { "tls::ciphersuite", OSSL_USDT_WORD(SSL_CIPHER_get_protocol_id(s->s3.tmp.new_cipher)) });
             }
             if (!s->hit) {
                 if (!tls_choose_sigalg(s, 1)) {
@@ -3013,6 +3021,8 @@ WORK_STATE tls_post_process_client_hello(SSL_CONNECTION *s, WORK_STATE wst)
         } else {
             /* Session-id reuse */
             s->s3.tmp.new_cipher = s->session->cipher;
+
+            OSSL_USDT_data(s, { "tls::ciphersuite", OSSL_USDT_WORD(SSL_CIPHER_get_protocol_id(s->s3.tmp.new_cipher)) });
         }
 
         /*
@@ -3423,12 +3433,12 @@ CON_FUNC_RETURN tls_construct_server_key_exchange(SSL_CONNECTION *s,
 
             /* These BIGNUMs need to be freed when we're finished */
             freer = 1;
-            if (!EVP_PKEY_get_bn_param(s->s3.tmp.pkey, OSSL_PKEY_PARAM_FFC_P,
+            if (!EVP_PKEY_get_bn_param(s->s3.tmp.pkey, OSSL_PKEY_PARAM_ffc_p,
                     &r[0])
-                || !EVP_PKEY_get_bn_param(s->s3.tmp.pkey, OSSL_PKEY_PARAM_FFC_G,
+                || !EVP_PKEY_get_bn_param(s->s3.tmp.pkey, OSSL_PKEY_PARAM_ffc_g,
                     &r[1])
                 || !EVP_PKEY_get_bn_param(s->s3.tmp.pkey,
-                    OSSL_PKEY_PARAM_PUB_KEY, &r[2])) {
+                    OSSL_PKEY_PARAM_pub_key, &r[2])) {
                 SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
                 goto err;
             }
@@ -3839,11 +3849,11 @@ static int tls_process_cke_rsa(SSL_CONNECTION *s, PACKET *pkt)
         goto err;
     }
 
-    *p++ = OSSL_PARAM_construct_uint(OSSL_ASYM_CIPHER_PARAM_TLS_CLIENT_VERSION,
+    *p++ = OSSL_PARAM_construct_uint(OSSL_ASYM_CIPHER_PARAM_tls_client_version,
         (unsigned int *)&s->client_version);
     if ((s->options & SSL_OP_TLS_ROLLBACK_BUG) != 0)
         *p++ = OSSL_PARAM_construct_uint(
-            OSSL_ASYM_CIPHER_PARAM_TLS_NEGOTIATED_VERSION,
+            OSSL_ASYM_CIPHER_PARAM_tls_negotiated_version,
             (unsigned int *)&s->version);
     *p++ = OSSL_PARAM_construct_end();
 
@@ -4643,6 +4653,9 @@ WORK_STATE tls_post_process_client_certificate(SSL_CONNECTION *s,
     } else {
         if (s->rwstate == SSL_RETRY_VERIFY)
             s->rwstate = SSL_NOTHING;
+
+        OSSL_USDT_new_context(s, "tls::verify_cert_chain");
+
         i = ssl_verify_cert_chain(s, sk);
         if (i > 0 && s->rwstate == SSL_RETRY_VERIFY) {
             /*

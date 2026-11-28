@@ -51,7 +51,7 @@ jobs:
 
   run-checker:
     needs: [validate-dispatch-inputs]
-    if: |
+    if: &upstream_or_dispatch |
       (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
       !cancelled() &&
       (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
@@ -175,7 +175,8 @@ jobs:
         ]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
+    - &checkout
+      uses: actions/checkout@v6
       with:
         persist-credentials: false
         ref: ${{ github.event.inputs.head_sha || github.sha }}
@@ -196,16 +197,10 @@ jobs:
 
   run-checker-sctp:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: Install Dependencies for sctp option
@@ -243,17 +238,15 @@ jobs:
 
   enable_brotli_dynamic:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
     - name: install brotli
       run: |
         sudo apt-get update
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install brotli libbrotli1 libbrotli-dev
-    - name: checkout openssl
+    - &checkout_openssl
+      name: checkout openssl
       uses: actions/checkout@v6
       with:
         persist-credentials: false
@@ -273,21 +266,14 @@ jobs:
 
   enable_zstd_dynamic:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
     - name: install zstd
       run: |
         sudo apt-get update
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install zstd libzstd1 libzstd-dev
-    - name: checkout openssl
-      uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout_openssl
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: config
@@ -303,10 +289,7 @@ jobs:
 
   enable_brotli_and_zstd_dynamic:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
     - name: install brotli and zstd
@@ -314,11 +297,7 @@ jobs:
         sudo apt-get update
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install brotli libbrotli1 libbrotli-dev
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install zstd libzstd1 libzstd-dev
-    - name: checkout openssl
-      uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout_openssl
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: config
@@ -334,17 +313,10 @@ jobs:
 
   malloc_failure_testing:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
-    - name: checkout openssl
-      uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout_openssl
     - name: Adjust ASLR for sanitizer
       run: |
         sudo cat /proc/sys/vm/mmap_rnd_bits
@@ -364,21 +336,14 @@ jobs:
 
   enable_brotli_and_asan_ubsan:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
     - name: install brotli
       run: |
         sudo apt-get update
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install brotli libbrotli1 libbrotli-dev
-    - name: checkout openssl
-      uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout_openssl
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: Adjust ASLR for sanitizer
@@ -398,21 +363,14 @@ jobs:
 
   enable_zstd_and_asan_ubsan:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
     - name: install zstd
       run: |
         sudo apt-get update
         sudo apt-get -yq --no-install-suggests --no-install-recommends --allow-unauthenticated --allow-downgrades --allow-remove-essential --allow-change-held-packages install zstd libzstd1 libzstd-dev
-    - name: checkout openssl
-      uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout_openssl
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: Adjust ASLR for sanitizer
@@ -432,19 +390,13 @@ jobs:
 
   enable_tfo:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     strategy:
       matrix:
         os: [ubuntu-latest, macos-15, macos-15-intel]
     runs-on: ${{matrix.os}}
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: config
@@ -458,16 +410,10 @@ jobs:
 
   enable_buildtest:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: config
@@ -483,16 +429,10 @@ jobs:
 
   memory_sanitizer_slh_dsa:
     needs: [validate-dispatch-inputs]
-    if: |
-      (github.repository == 'openssl/openssl' || github.event_name == 'workflow_dispatch') &&
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *upstream_or_dispatch
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: Adjust ASLR for sanitizer
@@ -513,15 +453,12 @@ jobs:
 
   bn_debug:
     needs: [validate-dispatch-inputs]
-    if: |
+    if: &inputs_valid |
       !cancelled() &&
       (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: config
       run: ./config --debug --strict-warnings -DBN_DEBUG --banner=Configured -DOPENSSL_NO_SECURE_MEMORY && perl configdata.pm --dump
     - name: make
@@ -541,16 +478,11 @@ jobs:
 
   fuzz_tests_mfail_deep:
     needs: [validate-dispatch-inputs]
-    if: |
-      !cancelled() &&
-      (needs.validate-dispatch-inputs.result == 'success' || needs.validate-dispatch-inputs.result == 'skipped')
+    if: *inputs_valid
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        ref: ${{ github.event.inputs.head_sha || github.sha }}
+    - *checkout
     - name: checkout fuzz/corpora submodule
       run: git submodule update --init --depth 1 fuzz/corpora
     - name: Adjust ASLR for sanitizer

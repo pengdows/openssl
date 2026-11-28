@@ -2401,8 +2401,9 @@ static int test_evp_mac_life_cycle(int idx)
     const MAC_LIFE_CYCLE_TEST *t = &mac_life_cycle_tests[idx];
     int ret = 0;
     EVP_MAC *mac = NULL;
-    EVP_MAC_CTX *ctx = NULL, *dup = NULL, *pre = NULL;
+    EVP_MAC_CTX *ctx = NULL, *dup = NULL, *pre = NULL, *kctx = NULL;
     OSSL_PARAM init_params[3], reinit_params[2], bad_params[2], *p;
+    OSSL_PARAM key_params[4], bad_key_params[3];
     static const unsigned char data[] = "EVP_MAC life-cycle enforcement";
     unsigned char key[32], iv[12];
     unsigned char mac1[EVP_MAX_MD_SIZE], mac2[EVP_MAX_MD_SIZE];
@@ -2432,6 +2433,25 @@ static int test_evp_mac_life_cycle(int idx)
             (char *)"no-such-algorithm", 0);
         bad_params[1] = OSSL_PARAM_construct_end();
     }
+    /* The parameters of init_params together with the key */
+    p = key_params;
+    if (t->subalg != NULL)
+        *p++ = OSSL_PARAM_construct_utf8_string(t->subalg_param,
+            (char *)t->subalg, 0);
+    if (t->needs_iv)
+        *p++ = OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_IV,
+            iv, sizeof(iv));
+    *p++ = OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_KEY,
+        key, t->keylen);
+    *p = OSSL_PARAM_construct_end();
+    /* A key that cannot be set: unknown sub-algorithm or bad key length */
+    p = bad_key_params;
+    if (t->subalg_param != NULL)
+        *p++ = OSSL_PARAM_construct_utf8_string(t->subalg_param,
+            (char *)"no-such-algorithm", 0);
+    *p++ = OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_KEY, key,
+        t->subalg_param != NULL ? t->keylen : t->bad_keylen);
+    *p = OSSL_PARAM_construct_end();
 
     ERR_clear_error();
     if (!TEST_ptr(mac = EVP_MAC_fetch(testctx, t->name, testpropq))
@@ -2606,8 +2626,66 @@ static int test_evp_mac_life_cycle(int idx)
         || !TEST_ulong_eq(ERR_peek_error(), 0))
         goto err;
 
+    /*
+     * EVP_MAC_CTX_set_params() does not initialise a new context unless it
+     * is given a key, in which case it is the same as EVP_MAC_init().
+     */
+    if (!TEST_ptr(kctx = EVP_MAC_CTX_new(mac))
+        || !TEST_true(EVP_MAC_CTX_set_params(kctx, init_params))
+        || !TEST_false(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_err_r(ERR_LIB_EVP, EVP_R_OPERATION_NOT_INITIALIZED))
+        goto err;
+    ERR_clear_error();
+    if (!TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_true(EVP_MAC_final(kctx, mac2, &mac2len, sizeof(mac2)))
+        || !TEST_mem_eq(mac2, mac2len, mac1, mac1len)
+        || !TEST_ulong_eq(ERR_peek_error(), 0))
+        goto err;
+
+    /* It re-initialises a finalised context, and discards pending input */
+    if (!TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_update(kctx, iv, sizeof(iv)))
+        || !TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_true(EVP_MAC_final(kctx, mac2, &mac2len, sizeof(mac2)))
+        || !TEST_mem_eq(mac2, mac2len, mac1, mac1len))
+        goto err;
+
+    /* Output can be produced straight after it (empty input) */
+    if (!TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_final(kctx, mac2, &mac2len, sizeof(mac2)))
+        || !TEST_size_t_gt(mac2len, 0)
+        || !TEST_ulong_eq(ERR_peek_error(), 0))
+        goto err;
+
+    /* Like a failed EVP_MAC_init(), a key that is rejected resets the state */
+    if (!TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_false(EVP_MAC_CTX_set_params(kctx, bad_key_params)))
+        goto err;
+    ERR_clear_error();
+    if (!TEST_false(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_err_r(ERR_LIB_EVP, EVP_R_OPERATION_NOT_INITIALIZED)
+        || !TEST_false(EVP_MAC_final(kctx, mac2, &mac2len, sizeof(mac2)))
+        || !TEST_err_r(ERR_LIB_EVP, EVP_R_OPERATION_NOT_INITIALIZED))
+        goto err;
+    ERR_clear_error();
+
+    /* Parameters without a key still leave the state alone afterwards */
+    if (!TEST_true(EVP_MAC_CTX_set_params(kctx, key_params))
+        || !TEST_true(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_true(EVP_MAC_final(kctx, mac2, &mac2len, sizeof(mac2)))
+        || !TEST_mem_eq(mac2, mac2len, mac1, mac1len)
+        || !TEST_true(EVP_MAC_CTX_set_params(kctx, reinit_params))
+        || !TEST_false(EVP_MAC_update(kctx, data, sizeof(data)))
+        || !TEST_err_r(ERR_LIB_EVP, EVP_R_UPDATE_ERROR))
+        goto err;
+    ERR_clear_error();
+
     ret = 1;
 err:
+    EVP_MAC_CTX_free(kctx);
     EVP_MAC_CTX_free(pre);
     EVP_MAC_CTX_free(dup);
     EVP_MAC_CTX_free(ctx);
@@ -7301,6 +7379,42 @@ err:
     return res;
 }
 
+static int test_cipher_param_decoding(int idx)
+{
+    EVP_CIPHER *cipher = NULL;
+    EVP_CIPHER_CTX *ctx = NULL;
+    unsigned int padding = 0;
+    const char *name = idx == 0 ? OSSL_CIPHER_PARAM_PADDING
+                                : OSSL_CIPHER_PARAM_padding;
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_uint(name, &padding),
+        OSSL_PARAM_END
+    };
+    int ret = 0;
+
+    if (!TEST_ptr(cipher = EVP_CIPHER_fetch(testctx, "AES-128-CBC", testpropq))
+        || !TEST_ptr(ctx = EVP_CIPHER_CTX_new())
+        || !TEST_true(EVP_EncryptInit_ex2(ctx, cipher, NULL, NULL, NULL))
+        || !TEST_true(EVP_CIPHER_CTX_get_params(ctx, params))
+        || !TEST_uint_eq(padding, 1))
+        goto end;
+
+    padding = 0;
+    if (!TEST_true(EVP_CIPHER_CTX_set_params(ctx, params)))
+        goto end;
+
+    padding = 1;
+    if (!TEST_true(EVP_CIPHER_CTX_get_params(ctx, params))
+        || !TEST_uint_eq(padding, 0))
+        goto end;
+
+    ret = 1;
+end:
+    EVP_CIPHER_CTX_free(ctx);
+    EVP_CIPHER_free(cipher);
+    return ret;
+}
+
 enum cipher_param_list_type {
     CIPHER_ALGORITHM_PARAMS,
     CIPHER_GETTABLE_CTX_PARAMS,
@@ -9635,6 +9749,7 @@ int setup_tests(void)
     ADD_ALL_TESTS(test_iv_reuse, OSSL_NELEM(iv_state_ciphers));
     if (OSSL_NELEM(keylen_change_ciphers) - 1 > 0)
         ADD_ALL_TESTS(test_keylen_change, OSSL_NELEM(keylen_change_ciphers) - 1);
+    ADD_ALL_TESTS(test_cipher_param_decoding, 2);
     ADD_ALL_TESTS(test_cipher_param_types, OSSL_NELEM(cipher_param_tests));
 #if !defined(OPENSSL_NO_MULTIBLOCK)
     ADD_TEST(test_aes_cbc_hmac_sha_short_multiblock_aad);

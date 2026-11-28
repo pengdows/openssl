@@ -38,6 +38,10 @@ OpenSSL 4.2
 
    *Alaric Dailey*
 
+ * Added parameter name pointers for faster `OSSL_PARAM` decoding.
+
+   *Dr Paul Dale*
+
  * Added TurboSHAKE and KangarooTwelve XOF digest support as per [RFC 9861].
 
    *Filip Skokan*
@@ -70,6 +74,18 @@ OpenSSL 4.2
 
    *Alexandr Nedvedicky*
 
+ * Added `SSL_send_fatal_alert()`, which lets an application send a fatal
+   alert on a TLS or DTLS connection and abort it, for example when it detects
+   an error after the handshake that libssl cannot see. RFC 9846 recommends
+   sending an appropriate fatal alert before closing on a fatal error, but
+   until now there was no public API to do so. After the call the connection
+   is in the same failed state as after an internally detected fatal error,
+   and `SSL_shutdown()` does not send a close_notify. The function has the
+   same signature as in BoringSSL and compatible behaviour. It is not
+   supported on QUIC objects.
+
+   *kinchpik*
+
  * s390x: Disable mod-expo offloading to a crypto card for small exponents.
    Add a new keyword `cex_min_bits:<bits>` for the `OPENSSL_s390xcap`
    environment variable to specify the minimum number of bits that the
@@ -90,6 +106,10 @@ OpenSSL 4.2
 
    *Dmitry Misharov*
 
+ * Added optimized ML-DSA NTT for armv8.
+
+   *Shane Lontis*
+
  * Changed TLS 1.3 clients to offer a PSK, and to attempt 0-RTT early data,
    only when it can actually be used. A resumption ticket or external PSK is
    offered only if some offered ciphersuite shares its handshake digest, and
@@ -109,10 +129,12 @@ OpenSSL 4.2
    life_cycle-mac(7).  `EVP_MAC_update()`, `EVP_MAC_final()` and
    `EVP_MAC_finalXOF()` fail with an error when called on an `EVP_MAC_CTX`
    that has not been initialised with `EVP_MAC_init()` or
-   `EVP_MAC_init_SKEY()`, including one whose key was only supplied through
-   `EVP_MAC_CTX_set_params()`, or that has already been finalised and not
-   been re-initialised since.  A failed `EVP_MAC_init()` or
-   `EVP_MAC_init_SKEY()` leaves the context uninitialised.
+   `EVP_MAC_init_SKEY()`, or that has already been finalised and not been
+   re-initialised since.  A failed `EVP_MAC_init()` or `EVP_MAC_init_SKEY()`
+   leaves the context uninitialised.  Supplying the key through
+   `EVP_MAC_CTX_set_params()` initialises the context too: with the
+   `OSSL_MAC_PARAM_KEY` parameter it is equivalent to `EVP_MAC_init()` with
+   a NULL key and the same parameters, for every MAC implementation.
    <!-- https://github.com/openssl/openssl/pull/33084-->
 
    *Daniel Kubec*
@@ -228,6 +250,14 @@ OpenSSL 4.2
    <!-- https://github.com/openssl/openssl/pull/32777 -->
 
    *Alex Gaynor*
+
+ * `libcrypto` and `libssl` are instrumented with eBPF probes to trace
+   TLS and crypto usage, in a compatible manner with the
+   [crypto-auditing](https://github.com/latchset/crypto-auditing)
+   project. This is enabled by default if the system has a usable
+   `<sys/sdt.h>` header. Use `no-usdt` to disable the support.
+
+   *Daiki Ueno and Clemens Lang*
 
 OpenSSL 4.1
 -----------

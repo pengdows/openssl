@@ -12,6 +12,7 @@
 #include <string.h>
 #include "apps.h"
 #include "progs.h"
+#include <openssl/core_names.h>
 #include <openssl/bio.h>
 #include <openssl/asn1.h>
 #include <openssl/err.h>
@@ -1051,10 +1052,12 @@ cert_loop:
             goto err;
         if (!noout) {
             if (outformat == FORMAT_ASN1) {
-                X509_REQ_print_ex(out, rq, get_nameopt(), X509_FLAG_COMPAT);
-                i = i2d_X509_bio(out, x);
-            } else {
+                i = i2d_X509_REQ_bio(out, rq);
+            } else if (outformat == FORMAT_PEM) {
                 i = PEM_write_bio_X509_REQ(out, rq);
+            } else {
+                BIO_puts(bio_err, "Bad output format specified for outfile\n");
+                goto err;
             }
             if (!i) {
                 BIO_puts(bio_err,
@@ -1149,14 +1152,14 @@ cert_loop:
                 BIGNUM *n = NULL;
 
                 /* Every RSA key has an 'n' */
-                EVP_PKEY_get_bn_param(pkey, "n", &n);
+                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_rsa_n, &n);
                 BN_print(out, n);
                 BN_free(n);
             } else if (EVP_PKEY_is_a(pkey, "DSA")) {
                 BIGNUM *dsapub = NULL;
 
                 /* Every DSA key has a 'pub' */
-                EVP_PKEY_get_bn_param(pkey, "pub", &dsapub);
+                EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_pub_key, &dsapub);
                 BN_print(out, dsapub);
                 BN_free(dsapub);
             } else {

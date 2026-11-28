@@ -29,6 +29,7 @@
 #include "internal/comp.h"
 #include "internal/ssl_unwrap.h"
 #include <openssl/ocsp.h>
+#include "internal/usdt.h"
 
 static MSG_PROCESS_RETURN tls_process_as_hello_retry_request(SSL_CONNECTION *s,
     RAW_EXTENSION *extensions);
@@ -1906,6 +1907,8 @@ static int set_client_ciphersuite(SSL_CONNECTION *s,
     }
     s->s3.tmp.new_cipher = c;
 
+    OSSL_USDT_data(s, { "tls::ciphersuite", OSSL_USDT_WORD(SSL_CIPHER_get_protocol_id(c)) });
+
     return 1;
 }
 
@@ -2131,6 +2134,9 @@ MSG_PROCESS_RETURN tls_process_server_hello(SSL_CONNECTION *s, PACKET *pkt)
             /* SSLfatal() already called */
             goto err;
         }
+
+        OSSL_USDT_data(s,
+            { "tls::protocol_version", OSSL_USDT_WORD(s->version) });
     }
 
     if (SSL_CONNECTION_IS_VERSION13(s) || hrr) {
@@ -2728,6 +2734,9 @@ WORK_STATE tls_post_process_server_certificate(SSL_CONNECTION *s,
      * set. The *documented* interface remains the same.
      */
     ERR_set_mark();
+
+    OSSL_USDT_new_context(s, "tls::verify_cert_chain");
+
     i = ssl_verify_cert_chain(s, s->session->peer_chain);
     if (i <= 0 && s->verify_mode != SSL_VERIFY_NONE) {
         ERR_clear_last_mark();
@@ -2923,9 +2932,9 @@ static int tls_process_ske_dhe(SSL_CONNECTION *s, PACKET *pkt, EVP_PKEY **pkey)
 
     tmpl = OSSL_PARAM_BLD_new();
     if (tmpl == NULL
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_FFC_P, p)
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_FFC_G, g)
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_PUB_KEY,
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_ffc_p, p)
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_ffc_g, g)
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_pub_key,
             bnpub_key)
         || (params = OSSL_PARAM_BLD_to_param(tmpl)) == NULL) {
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
@@ -3230,8 +3239,11 @@ MSG_PROCESS_RETURN tls_process_certificate_request(SSL_CONNECTION *s,
             /*
              * We already sent close_notify. This can only happen in TLSv1.3
              * post-handshake messages. We can't reasonably respond to this, so
-             * we just ignore it
+             * we just ignore it. The read transition already moved us to
+             * SSL_PHA_REQUESTED; undo that so that the write transition does
+             * not go on to send a Certificate.
              */
+            s->post_handshake_auth = SSL_PHA_EXT_SENT;
             return MSG_PROCESS_FINISHED_READING;
         }
 

@@ -437,8 +437,8 @@ static EVP_PKEY *new_raw_key_int(OSSL_LIB_CTX *libctx,
 
         ERR_clear_last_mark();
         params[0] = OSSL_PARAM_construct_octet_string(
-            key_is_priv ? OSSL_PKEY_PARAM_PRIV_KEY
-                        : OSSL_PKEY_PARAM_PUB_KEY,
+            key_is_priv ? OSSL_PKEY_PARAM_priv_key
+                        : OSSL_PKEY_PARAM_pub_key,
             (void *)key, len);
 
         if (EVP_PKEY_fromdata(ctx, &pkey, EVP_PKEY_KEYPAIR, params) != 1) {
@@ -657,12 +657,12 @@ static EVP_PKEY *new_cmac_key_int(const unsigned char *priv, size_t len,
         goto err;
     }
 
-    *p++ = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PRIV_KEY,
+    *p++ = OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_priv_key,
         (void *)priv, len);
-    *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_CIPHER,
+    *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_cipher,
         (char *)cipher_name, 0);
     if (propq != NULL)
-        *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_PROPERTIES,
+        *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_properties,
             (char *)propq, 0);
     *p = OSSL_PARAM_construct_end();
 
@@ -1302,7 +1302,7 @@ int EVP_PKEY_get_default_digest_name(EVP_PKEY *pkey,
 int EVP_PKEY_get_group_name(const EVP_PKEY *pkey, char *gname, size_t gname_sz,
     size_t *gname_len)
 {
-    return EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_GROUP_NAME,
+    return EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_group_name,
         gname, gname_sz, gname_len);
 }
 
@@ -1334,7 +1334,7 @@ int EVP_PKEY_set1_encoded_public_key(EVP_PKEY *pkey, const unsigned char *pub,
     if (evp_pkey_is_provided(pkey))
 #endif /* !FIPS_MODULE */
         return EVP_PKEY_set_octet_string_param(pkey,
-            OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+            OSSL_PKEY_PARAM_encoded_public_key,
             (unsigned char *)pub, publen);
 
 #ifndef FIPS_MODULE
@@ -1365,7 +1365,7 @@ size_t EVP_PKEY_get1_encoded_public_key(EVP_PKEY *pkey, unsigned char **ppub)
          * to allocate.
          */
         EVP_PKEY_get_octet_string_param(pkey,
-            OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+            OSSL_PKEY_PARAM_encoded_public_key,
             NULL, 0, &return_size);
         if (return_size == OSSL_PARAM_UNMODIFIED)
             return 0;
@@ -1376,7 +1376,7 @@ size_t EVP_PKEY_get1_encoded_public_key(EVP_PKEY *pkey, unsigned char **ppub)
             return 0;
 
         if (!EVP_PKEY_get_octet_string_param(pkey,
-                OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY,
+                OSSL_PKEY_PARAM_encoded_public_key,
                 buf, return_size, NULL)) {
             OPENSSL_free(buf);
             return 0;
@@ -1879,7 +1879,7 @@ void *evp_pkey_export_to_provider(EVP_PKEY *pk, OSSL_LIB_CTX *libctx,
             p = params;
         } else if (propquery != NULL) {
             params[0] = OSSL_PARAM_construct_utf8_string(
-                OSSL_PKEY_PARAM_PROPERTIES, (char *)propquery, 0);
+                OSSL_PKEY_PARAM_properties, (char *)propquery, 0);
             p = params;
         }
         keydata = evp_keymgmt_newdata(tmp_keymgmt, p);
@@ -2317,8 +2317,25 @@ int EVP_PKEY_set_params(EVP_PKEY *pkey, OSSL_PARAM params[])
 {
     if (pkey != NULL) {
         if (evp_pkey_is_provided(pkey)) {
+            int ret;
+
+            /* Without a set_params method the key cannot change */
+            if (pkey->keymgmt->set_params == NULL)
+                return 1;
+
+            ret = evp_keymgmt_set_params(pkey->keymgmt, pkey->keydata, params);
+
+            /*
+             * Increment the dirty count after the key has changed, under
+             * the lock the export code uses.  An export that read the key
+             * before or during the change carries an older count, so it
+             * is never used as current.
+             */
+            if (!CRYPTO_THREAD_write_lock(pkey->lock))
+                return 0;
             pkey->dirty_cnt++;
-            return evp_keymgmt_set_params(pkey->keymgmt, pkey->keydata, params);
+            CRYPTO_THREAD_unlock(pkey->lock);
+            return ret;
         }
 #ifndef FIPS_MODULE
         /*
@@ -2381,7 +2398,7 @@ int EVP_PKEY_get_ec_point_conv_form(const EVP_PKEY *pkey)
     }
 
     if (!EVP_PKEY_get_utf8_string_param(pkey,
-            OSSL_PKEY_PARAM_EC_POINT_CONVERSION_FORMAT,
+            OSSL_PKEY_PARAM_ec_point_conversion_format,
             name, sizeof(name), &name_len))
         return 0;
 
@@ -2424,7 +2441,7 @@ int EVP_PKEY_get_field_type(const EVP_PKEY *pkey)
 #endif
     }
 
-    if (!EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_EC_FIELD_TYPE,
+    if (!EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_ec_field_type,
             fstr, sizeof(fstr), &fstrlen))
         return 0;
 

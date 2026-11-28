@@ -1850,7 +1850,7 @@ int dtls_listener_cookie_hmac(SSL *ssl, uint64_t timestamp,
     if (mctx == NULL)
         goto err;
 
-    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST,
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_digest,
         "SHA2-256", 0);
     params[1] = OSSL_PARAM_construct_end();
 
@@ -2865,8 +2865,10 @@ void ossl_dtls_listener_set0_net_rbio(SSL *s, BIO *bio)
     DTLS_LISTENER *dl;
     BIO *old_rbio;
 
-    if (!IS_DTLS_LISTENER(s))
+    if (!IS_DTLS_LISTENER(s)) {
+        BIO_free_all(bio);
         return;
+    }
 
     dl = (DTLS_LISTENER *)s;
 
@@ -2891,12 +2893,6 @@ void ossl_dtls_listener_set0_net_rbio(SSL *s, BIO *bio)
     ossl_dgram_demux_set_mtu(dl->demux, (unsigned int)dl->max_dgram_size);
 
     old_rbio = dl->net_rbio;
-
-    /* No change - nothing to do */
-    if (old_rbio == bio) {
-        ossl_crypto_mutex_unlock(dl->mutex);
-        return;
-    }
 
     dl->net_rbio = bio;
 
@@ -2942,8 +2938,10 @@ void ossl_dtls_listener_set0_net_wbio(SSL *s, BIO *bio)
     DTLS_LISTENER *dl;
     BIO *old_wbio;
 
-    if (!IS_DTLS_LISTENER(s))
+    if (!IS_DTLS_LISTENER(s)) {
+        BIO_free_all(bio);
         return;
+    }
 
     dl = (DTLS_LISTENER *)s;
 
@@ -2955,6 +2953,7 @@ void ossl_dtls_listener_set0_net_wbio(SSL *s, BIO *bio)
 
     /* No change - nothing to do */
     if (old_wbio == bio) {
+        BIO_free_all(bio);
         return;
     }
 
