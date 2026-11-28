@@ -177,6 +177,22 @@ int ossl_siv128_init(SIV128_CONTEXT *ctx, const unsigned char *key, int klen,
         return 0;
 
     memset(&ctx->d, 0, sizeof(ctx->d));
+
+    /* no new key: start a new operation with the existing one */
+    if (key == NULL) {
+        if (ctx->mac_ctx_init == NULL
+            || (mac_ctx = EVP_MAC_CTX_dup(ctx->mac_ctx_init)) == NULL
+            || !EVP_MAC_update(mac_ctx, zero, sizeof(zero))
+            || !EVP_MAC_final(mac_ctx, ctx->d.byte, &out_len,
+                sizeof(ctx->d.byte))) {
+            EVP_MAC_CTX_free(mac_ctx);
+            return 0;
+        }
+        EVP_MAC_CTX_free(mac_ctx);
+        ctx->final_ret = -1;
+        ctx->crypto_ok = 1;
+        return 1;
+    }
     EVP_CIPHER_CTX_free(ctx->cipher_ctx);
     EVP_MAC_CTX_free(ctx->mac_ctx_init);
     EVP_MAC_free(ctx->mac);
@@ -184,11 +200,11 @@ int ossl_siv128_init(SIV128_CONTEXT *ctx, const unsigned char *key, int klen,
     ctx->cipher_ctx = NULL;
     ctx->mac_ctx_init = NULL;
 
-    if (key == NULL || cbc == NULL || ctr == NULL)
+    if (cbc == NULL || ctr == NULL)
         return 0;
 
     cbc_name = EVP_CIPHER_get0_name(cbc);
-    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_CIPHER,
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_cipher,
         (char *)cbc_name, 0);
     params[1] = OSSL_PARAM_construct_end();
 

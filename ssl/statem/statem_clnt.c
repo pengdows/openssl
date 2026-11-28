@@ -2932,9 +2932,9 @@ static int tls_process_ske_dhe(SSL_CONNECTION *s, PACKET *pkt, EVP_PKEY **pkey)
 
     tmpl = OSSL_PARAM_BLD_new();
     if (tmpl == NULL
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_FFC_P, p)
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_FFC_G, g)
-        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_PUB_KEY,
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_ffc_p, p)
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_ffc_g, g)
+        || !OSSL_PARAM_BLD_push_BN(tmpl, OSSL_PKEY_PARAM_pub_key,
             bnpub_key)
         || (params = OSSL_PARAM_BLD_to_param(tmpl)) == NULL) {
         SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
@@ -3239,8 +3239,11 @@ MSG_PROCESS_RETURN tls_process_certificate_request(SSL_CONNECTION *s,
             /*
              * We already sent close_notify. This can only happen in TLSv1.3
              * post-handshake messages. We can't reasonably respond to this, so
-             * we just ignore it
+             * we just ignore it. The read transition already moved us to
+             * SSL_PHA_REQUESTED; undo that so that the write transition does
+             * not go on to send a Certificate.
              */
+            s->post_handshake_auth = SSL_PHA_EXT_SENT;
             return MSG_PROCESS_FINISHED_READING;
         }
 

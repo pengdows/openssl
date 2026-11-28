@@ -454,6 +454,32 @@ err:
     return testresult;
 }
 
+/* SSL_send_fatal_alert() is not supported on QUIC objects */
+static int test_send_fatal_alert(void)
+{
+    SSL_CTX *ctx = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_client_method());
+    SSL *ssl = NULL;
+    int testresult = 0;
+
+    if (!TEST_ptr(ctx)
+        || !TEST_ptr(ssl = SSL_new(ctx)))
+        goto err;
+
+    ERR_clear_error();
+    if (!TEST_int_eq(SSL_send_fatal_alert(ssl, SSL_AD_INTERNAL_ERROR), -1)
+        || !TEST_int_eq(ERR_GET_REASON(ERR_peek_last_error()),
+            SSL_R_WRONG_SSL_VERSION))
+        goto err;
+
+    testresult = 1;
+err:
+    ERR_clear_error();
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+
+    return testresult;
+}
+
 static int test_cipher_find(void)
 {
     SSL_CTX *cctx = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_client_method());
@@ -1539,8 +1565,7 @@ err:
 static int test_alpn(int idx)
 {
     SSL_CTX *cctx = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_client_method());
-    SSL *clientquic = NULL;
-    QUIC_TSERVER *qtserv = NULL;
+    SSL *clientquic = NULL, *listener = NULL, *serverquic = NULL;
     int testresult = 0;
     int ret;
 
@@ -1552,10 +1577,10 @@ static int test_alpn(int idx)
         goto err;
 
     if (!TEST_ptr(cctx)
-        || !TEST_true(qtest_create_quic_objects(libctx, cctx, NULL, cert,
+        || !TEST_true(qtest_create_quic_objects_ex(libctx, cctx, NULL, cert,
             privkey,
             QTEST_FLAG_FAKE_TIME,
-            &qtserv,
+            &listener,
             &clientquic, NULL, NULL)))
         goto err;
 
@@ -1578,13 +1603,15 @@ static int test_alpn(int idx)
     } else {
         /* ALPN was provided so we expect the connection to succeed */
         if (!TEST_int_eq(SSL_get_error(clientquic, ret), SSL_ERROR_WANT_READ)
-            || !TEST_true(qtest_create_quic_connection(qtserv, clientquic)))
+            || !TEST_true(qtest_create_quic_connection_ssl(listener, clientquic,
+                &serverquic)))
             goto err;
     }
 
     testresult = 1;
 err:
-    ossl_quic_tserver_free(qtserv);
+    SSL_free(serverquic);
+    SSL_free(listener);
     SSL_free(clientquic);
     SSL_CTX_free(cctx);
 
@@ -2343,8 +2370,7 @@ static int test_tparam(int idx)
 {
     int testresult = 0;
     SSL_CTX *c_ctx = NULL;
-    SSL *c_ssl = NULL;
-    QUIC_TSERVER *s = NULL;
+    SSL *c_ssl = NULL, *listener = NULL, *s_ssl = NULL;
     QTEST_FAULT *qtf = NULL;
     struct tparam_ctx ctx = { 0 };
 
@@ -2353,8 +2379,8 @@ static int test_tparam(int idx)
     if (!TEST_ptr(c_ctx = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_client_method())))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_objects(libctx, c_ctx, NULL, cert,
-            privkey, 0, &s,
+    if (!TEST_true(qtest_create_quic_objects_ex(libctx, c_ctx, NULL, cert,
+            privkey, 0, &listener,
             &c_ssl, &qtf, NULL)))
         goto err;
 
@@ -2362,7 +2388,7 @@ static int test_tparam(int idx)
             &ctx)))
         goto err;
 
-    if (!TEST_true(qtest_create_quic_connection_ex(s, c_ssl,
+    if (!TEST_true(qtest_create_quic_connection_ssl_ex(listener, c_ssl, &s_ssl,
             ctx.t->expect_fail != NULL)))
         goto err;
 
@@ -2397,7 +2423,8 @@ err:
                 (unsigned long long)ctx.t->id, ctx.t->op, ctx.t->buf_len);
     }
 
-    ossl_quic_tserver_free(s);
+    SSL_free(s_ssl);
+    SSL_free(listener);
     SSL_free(c_ssl);
     SSL_CTX_free(c_ctx);
     qtest_fault_free(qtf);
@@ -4964,6 +4991,190 @@ err:
 }
 
 /*
+ * Check SSL_net_read_desired() and SSL_net_write_desired() return the expected
+ * values for every object in the given list.
+ */
+static int check_net_desired(SSL **objs, size_t num_objs, int read_desired,
+    int write_desired)
+{
+    size_t i;
+
+    for (i = 0; i < num_objs; i++) {
+        if (!TEST_int_eq(SSL_net_read_desired(objs[i]), read_desired)
+            || !TEST_int_eq(SSL_net_write_desired(objs[i]), write_desired)) {
+            TEST_info("object %zu", i);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+/*
+ * Process events on both connections until len bytes have been read from
+ * *rstream and neither side has datagrams queued for transmission. If *rstream
+ * is NULL it is accepted from rconn once the peer's data arrives.
+ */
+static int net_desired_drain(SSL *wconn, SSL *rconn, SSL **rstream,
+    size_t len)
+{
+    unsigned char buf[1024];
+    size_t total = 0, readbytes;
+    int i;
+
+    for (i = 0; i < 1000; i++) {
+        if (total == len
+            && !SSL_net_write_desired(wconn)
+            && !SSL_net_write_desired(rconn))
+            return 1;
+
+        SSL_handle_events(rconn);
+        if (*rstream == NULL)
+            *rstream = SSL_accept_stream(rconn, 0);
+        while (*rstream != NULL && total < len
+            && SSL_read_ex(*rstream, buf, sizeof(buf), &readbytes))
+            total += readbytes;
+        SSL_handle_events(wconn);
+    }
+
+    TEST_info("read %zu of %zu bytes", total, len);
+    return 0;
+}
+
+/*
+ * Test SSL_net_read_desired() and SSL_net_write_desired() on all classes of
+ * QUIC object: listeners, connections and streams. The datagram BIO pair is
+ * given small write buffers so that a burst of stream data cannot be written
+ * to the network all at once, which must be reflected by
+ * SSL_net_write_desired() until the peer has drained it.
+ */
+static int test_net_desired(void)
+{
+    SSL_CTX *cctx = NULL, *sctx = NULL;
+    SSL *clientssl = NULL, *serverssl = NULL, *qlistener = NULL;
+    SSL *cstream = NULL, *sstream = NULL;
+    SSL *client_objs[2], *server_objs[3];
+    BIO *cbio = NULL, *sbio = NULL;
+    BIO_ADDR *addr = NULL;
+    struct in_addr ina;
+    static unsigned char data[16384];
+    size_t written;
+    int testresult = 0, i;
+
+    ina.s_addr = htonl(0x1f000001);
+
+    if (!TEST_ptr(sctx = create_server_ctx())
+        || !TEST_ptr(cctx = create_client_ctx())
+        || !TEST_true(BIO_new_bio_dgram_pair(&cbio, 4096, &sbio, 4096))
+        || !TEST_ptr(addr = create_addr(&ina, 8040))
+        || !TEST_true(bio_addr_bind(sbio, addr)))
+        goto err;
+    addr = NULL;
+
+    qlistener = ql_create(sctx, sbio);
+    sbio = NULL;
+    if (!TEST_ptr(qlistener))
+        goto err;
+
+    /* A running listener wants to read but has nothing to write */
+    SSL_handle_events(qlistener);
+    if (!check_net_desired(&qlistener, 1, 1, 0))
+        goto err;
+
+    if (!TEST_ptr(clientssl = SSL_new(cctx))
+        || !check_net_desired(&clientssl, 1, 0, 0)
+        || !TEST_ptr(addr = create_addr(&ina, 8040))
+        || !TEST_true(bio_addr_bind(cbio, addr)))
+        goto err;
+    if (!TEST_true(qc_init(clientssl, addr))) {
+        addr = NULL;
+        goto err;
+    }
+    addr = NULL;
+    SSL_set_bio(clientssl, cbio, cbio);
+    cbio = NULL;
+
+    for (i = 0; i < 100 && serverssl == NULL; i++) {
+        if (!TEST_int_le(SSL_connect(clientssl), 0))
+            goto err;
+        SSL_handle_events(qlistener);
+        serverssl = SSL_accept_connection(qlistener, 0);
+    }
+
+    if (!TEST_ptr(serverssl)
+        || !TEST_true(create_bare_ssl_connection(serverssl, clientssl,
+            SSL_ERROR_NONE, 0, 0))
+        || !TEST_true(SSL_set_default_stream_mode(clientssl,
+            SSL_DEFAULT_STREAM_MODE_NONE))
+        || !TEST_true(SSL_set_default_stream_mode(serverssl,
+            SSL_DEFAULT_STREAM_MODE_NONE))
+        || !TEST_true(SSL_set_incoming_stream_policy(serverssl,
+            SSL_INCOMING_STREAM_POLICY_ACCEPT, 0))
+        || !TEST_ptr(cstream = SSL_new_stream(clientssl, 0))
+        || !TEST_true(net_desired_drain(clientssl, serverssl, &sstream, 0)))
+        goto err;
+
+    client_objs[0] = clientssl;
+    client_objs[1] = cstream;
+
+    /* Connected and idle: wants to read, nothing to write */
+    if (!check_net_desired(client_objs, OSSL_NELEM(client_objs), 1, 0))
+        goto err;
+
+    /*
+     * Write more than fits in the client's network write buffer. The excess
+     * stays queued, so the client must now want to write.
+     */
+    if (!TEST_true(SSL_write_ex(cstream, data, sizeof(data), &written))
+        || !TEST_size_t_eq(written, sizeof(data))
+        || !check_net_desired(client_objs, OSSL_NELEM(client_objs), 1, 1))
+        goto err;
+
+    /* Once the server has consumed everything the client no longer wants to write */
+    if (!TEST_true(net_desired_drain(clientssl, serverssl, &sstream,
+            sizeof(data)))
+        || !check_net_desired(client_objs, OSSL_NELEM(client_objs), 1, 0))
+        goto err;
+
+    /*
+     * The server connection and stream share the listener's reactor, so all
+     * three must report the same state.
+     */
+    server_objs[0] = qlistener;
+    server_objs[1] = serverssl;
+    server_objs[2] = sstream;
+
+    if (!check_net_desired(server_objs, OSSL_NELEM(server_objs), 1, 0))
+        goto err;
+
+    if (!TEST_true(SSL_write_ex(sstream, data, sizeof(data), &written))
+        || !TEST_size_t_eq(written, sizeof(data))
+        || !check_net_desired(server_objs, OSSL_NELEM(server_objs), 1, 1))
+        goto err;
+
+    if (!TEST_true(net_desired_drain(serverssl, clientssl, &cstream,
+            sizeof(data)))
+        || !check_net_desired(server_objs, OSSL_NELEM(server_objs), 1, 0)
+        || !check_net_desired(client_objs, OSSL_NELEM(client_objs), 1, 0))
+        goto err;
+
+    testresult = 1;
+err:
+    SSL_free(sstream);
+    SSL_free(cstream);
+    SSL_free(serverssl);
+    SSL_free(clientssl);
+    SSL_free(qlistener);
+    BIO_free(cbio);
+    BIO_free(sbio);
+    BIO_ADDR_free(addr);
+    SSL_CTX_free(sctx);
+    SSL_CTX_free(cctx);
+
+    return testresult;
+}
+
+/*
  * When the server has a different primary group than the client, the server
  * should not fail on the client hello retry.
  */
@@ -5828,6 +6039,81 @@ end:
     return testresult;
 }
 
+static int test_quic_set0_bio_leak(void)
+{
+    int testresult = 0;
+    unsigned int i;
+    SSL_CTX *ctx_client = NULL;
+    SSL_CTX *ctx_server = NULL;
+    SSL *ssl_c = NULL;
+    SSL *ssl_l = NULL;
+    SSL *ssl[2];
+    BIO *bio = NULL;
+
+    ctx_client = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_client_method());
+    if (!TEST_ptr(ctx_client))
+        goto end;
+
+    ctx_server = SSL_CTX_new_ex(libctx, NULL, OSSL_QUIC_server_method());
+    if (!TEST_ptr(ctx_server))
+        goto end;
+
+    ssl_c = SSL_new(ctx_client);
+    if (!TEST_ptr(ssl_c))
+        goto end;
+
+    ssl_l = SSL_new_listener(ctx_server, 0);
+    if (!TEST_ptr(ssl_l))
+        goto end;
+
+    bio = BIO_new(BIO_s_dgram_mem());
+    if (!TEST_ptr(bio))
+        goto end;
+
+    ssl[0] = ssl_c;
+    ssl[1] = ssl_l;
+
+    for (i = 0; i < 2; i++) {
+        /*
+         * obtain reference to bio and pass it to SSL as reader bio
+         */
+        if (!TEST_true(BIO_up_ref(bio)))
+            goto end;
+        SSL_set0_rbio(ssl[i], bio);
+
+        /*
+         * obtain reference to bio and pass it to SSL as writer bio
+         */
+        if (!TEST_true(BIO_up_ref(bio)))
+            goto end;
+        SSL_set0_wbio(ssl[i], bio);
+
+        /*
+         * try to trigger reference leak. Setting the same bio to
+         * ssl instance must free the reference to bio. The caller
+         * to SSL_set0_{r,w}bio() always looses ownership.
+         */
+        if (!TEST_true(BIO_up_ref(bio)))
+            goto end;
+        SSL_set0_rbio(ssl[i], bio);
+
+        if (!TEST_true(BIO_up_ref(bio)))
+            goto end;
+        SSL_set0_wbio(ssl[i], bio);
+    }
+
+    testresult = 1;
+
+end:
+    BIO_free(bio);
+    SSL_free(ssl_l);
+    SSL_free(ssl_c);
+    SSL_CTX_free(ctx_server);
+    SSL_CTX_free(ctx_client);
+
+    return testresult;
+}
+
 /***********************************************************************************/
 OPT_TEST_DECLARE_USAGE("provider config certsdir datadir\n")
 
@@ -5945,6 +6231,7 @@ int setup_tests(void)
     ADD_TEST(test_fin_only_blocking);
     ADD_TEST(test_ciphersuites);
     ADD_TEST(test_cipher_find);
+    ADD_TEST(test_send_fatal_alert);
     ADD_TEST(test_version);
 #if defined(DO_SSL_TRACE_TEST)
     ADD_TEST(test_ssl_trace);
@@ -5988,6 +6275,7 @@ int setup_tests(void)
     ADD_TEST(test_accept_stream);
     ADD_ALL_TESTS(test_stream_gc, 3);
     ADD_TEST(test_stream_gc_send_active);
+    ADD_TEST(test_net_desired);
     ADD_TEST(test_client_hello_retry);
 #if OPENSSL_USE_IPV6
     ADD_TEST(test_quic_peer_addr_v6);
@@ -6000,6 +6288,7 @@ int setup_tests(void)
     ADD_MFAIL_TEST(test_ssl_new_mfail);
     ADD_TEST(test_pending_limit);
     ADD_TEST(test_reject_pending_conn);
+    ADD_TEST(test_quic_set0_bio_leak);
 
     return 1;
 err:
